@@ -1,11 +1,36 @@
-import { helix } from 'codemirror-helix';
+import { helix, modeField } from 'codemirror-helix';
 import { Extension, Prec } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { DEFAULT_EDITOR_VIEW, DEFAULT_SETTINGS, HelixSettings } from 'src/logic';
+import { ModeType } from 'codemirror-helix/entities';
+
+// Keys that Helix does not handle in Normal/Select mode but that Obsidian would
+// act on if not suppressed, corrupting editor state and the Helix undo history.
+// Add any newly discovered passthrough keys here.
+const UNHANDLED_KEYS: ReadonlySet<string> = new Set([
+    'Backspace',
+    'Enter',
+]);
+
+// Modifier+key combos to suppress in the same modes.
+// Each entry is matched when ALL listed modifiers are present (others are ignored).
+const UNHANDLED_COMBOS: ReadonlyArray<{ key: string; ctrl?: boolean; meta?: boolean; alt?: boolean }> = [
+    { key: 'z', ctrl: true }, // Ctrl+Z / Ctrl+Alt+Z — Obsidian undo, bypasses Helix history
+];
+
+function isUnhandledCombo(event: KeyboardEvent): boolean {
+    return UNHANDLED_COMBOS.some(combo =>
+        event.key === combo.key &&
+        (combo.ctrl  === undefined || event.ctrlKey  === combo.ctrl) &&
+        (combo.meta  === undefined || event.metaKey  === combo.meta) &&
+        (combo.alt   === undefined || event.altKey   === combo.alt)
+    );
+}
 
 export default class HelixPlugin extends Plugin {
     settings: HelixSettings;
-    extensions: Extension[]
+    extensions: Extension[];
 
     async onload() {
         await this.loadSettings();
@@ -13,7 +38,6 @@ export default class HelixPlugin extends Plugin {
         this.addSettingTab(new HelixSettingsTab(this.app, this));
         await this.setEnabled(this.settings.enableHelixKeybindings, false);
         this.registerEditorExtension(this.extensions);
-
         this.addCommand({
             id: "toggle-keybindings",
             name: "Toggle helix mode",
@@ -21,9 +45,7 @@ export default class HelixPlugin extends Plugin {
         });
     }
 
-    onunload() {
-
-    }
+    onunload() {}
 
     async loadSettings() {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()) as HelixSettings;
@@ -36,6 +58,7 @@ export default class HelixPlugin extends Plugin {
     async setEnabled(value: boolean, reload: boolean = true, print: boolean = false) {
         this.settings.enableHelixKeybindings = value;
         this.extensions.length = 0;
+
         if (value) {
             this.extensions.push(Prec.high(DEFAULT_EDITOR_VIEW));
             this.extensions.push(Prec.high(helix({
@@ -43,7 +66,27 @@ export default class HelixPlugin extends Plugin {
                     "editor.cursor-shape.insert": this.settings.cursorInInsertMode,
                 }
             })));
+
+            // Runs before all other handlers. In Normal/Select mode, Obsidian must
+            // not see keys that Helix leaves unhandled — doing so corrupts state.
+            this.extensions.push(Prec.highest(
+                EditorView.domEventHandlers({
+                    keydown(event: KeyboardEvent, view: EditorView) {
+                        const mode = view.state.field(modeField, false);
+                        if (mode == null || mode.type === ModeType.Insert) return false;
+
+                        if (UNHANDLED_KEYS.has(event.key) || isUnhandledCombo(event)) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            return true;
+                        }
+
+                        return false;
+                    }
+                })
+            ));
         }
+
         await this.saveSettings();
         if (reload) this.app.workspace.updateOptions();
         if (print) {
@@ -67,7 +110,6 @@ class HelixSettingsTab extends PluginSettingTab {
 
     display(): void {
         const { containerEl } = this;
-
         containerEl.empty();
         containerEl.createEl("p", { text: "Vim keybindings must be disabled for the plugin to work" });
 
@@ -78,6 +120,7 @@ class HelixSettingsTab extends PluginSettingTab {
                     .setValue(this.plugin.settings.enableHelixKeybindings)
                     .onChange(async (value) => this.plugin.setEnabled(value))
             });
+
         new Setting(containerEl)
             .setName('Cursor in insert mode')
             .addDropdown(dropDown => {
