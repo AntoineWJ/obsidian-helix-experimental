@@ -1,9 +1,8 @@
-import { helix, modeField } from 'codemirror-helix';
+import { helix} from 'codemirror-helix';
 import { Extension, Prec } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { DEFAULT_EDITOR_VIEW, DEFAULT_SETTINGS, HelixSettings } from 'src/logic';
-import { ModeType } from 'codemirror-helix/entities';
 
 // Keys that Helix does not handle in Normal/Select mode but that Obsidian would
 // act on if not suppressed, corrupting editor state and the Helix undo history.
@@ -67,24 +66,26 @@ export default class HelixPlugin extends Plugin {
                 }
             })));
 
-            // Runs before all other handlers. In Normal/Select mode, Obsidian must
-            // not see keys that Helix leaves unhandled — doing so corrupts state.
-            this.extensions.push(Prec.highest(
-                EditorView.domEventHandlers({
-                    keydown(event: KeyboardEvent, view: EditorView) {
-                        const mode = view.state.field(modeField, false);
-                        if (mode == null || mode.type === ModeType.Insert) return false;
+// Runs before all other handlers. In Normal/Select mode, Obsidian must
+// not see keys that Helix leaves unhandled — doing so corrupts state.
+// cm-hx-block-cursor is added by codemirror-helix to scrollDOM in Normal/Select
+// mode and removed in Insert mode, giving us a reliable proxy for the current mode.
+this.extensions.push(Prec.highest(
+    EditorView.domEventHandlers({
+        keydown(event: KeyboardEvent, view: EditorView) {
+            const isNormalOrSelect = view.scrollDOM.classList.contains('cm-hx-block-cursor');
+            if (!isNormalOrSelect) return false;
 
-                        if (UNHANDLED_KEYS.has(event.key) || isUnhandledCombo(event)) {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            return true;
-                        }
+            if (UNHANDLED_KEYS.has(event.key) || isUnhandledCombo(event)) {
+                event.preventDefault();
+                event.stopPropagation();
+                return true;
+            }
 
-                        return false;
-                    }
-                })
-            ));
+            return false;
+        }
+    })
+));
         }
 
         await this.saveSettings();
